@@ -2,7 +2,7 @@ import socket
 import threading
 import json
 import os
-import transform
+import convert
 import sys
 import hashlib
 import os
@@ -15,50 +15,53 @@ import subprocess
 from urllib.request import urlopen
 import re as r
 
-
-
 class TrackerRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         # Lấy đường dẫn từ yêu cầu GET
         path = urlparse(self.path).path
         ip = get_local_ip()
 
-        # Kiểm tra xem yêu cầu có phải là "/announce" hay không
-        if path.startswith("/announce/upload"):
-            # Trả về mã trạng thái 200 và thông báo "OK"
+        # Kiểm tra xem yêu cầu có phải là "/p2p" hay không
+        if path.startswith("/p2p/upload"):
             parsed_url = urlparse(self.path)
             # Trích xuất tham số từ query
             query_params = parse_qs(parsed_url.query)
-            # Lấy giá trị của tham số 'info_hash'
             info_hash = query_params.get('info_hash', [None])[0]
-            # Kiểm tra xem info hash có tồn tại không
-            self._update_seeder(query_params.get('port', [None])[0], info_hash, ip)
-            self.send_response(200)
+            ip = query_params.get('ip', [None])[0]
+            response_status_code = self._update_seeder(query_params.get('port', [None])[0], info_hash, ip)
+            self.send_response(response_status_code)
             self.send_header('Content-type', 'text/html')
-            self.end_headers()
-            self.wfile.write(b"OK")
-        elif path.startswith("/announce/download"):
-            # Trả về mã trạng thái 200 và thông báo "OK"
+            self.end_headers()                        
+            return
+        elif path.startswith("/p2p/download"):
             parsed_url = urlparse(self.path)
-            # Trích xuất tham số từ query
-            query_params = parse_qs(parsed_url.query)
-            # Lấy giá trị của tham số 'info_hash'
+            query_params = parse_qs(parsed_url.query)                       
             info_hash = query_params.get('info_hash', [None])[0]
-            # Kiểm tra xem info hash có tồn tại không
-            response = self.find_and_print_line("tracker_directory/seeder_info.txt", info_hash)
+            response = self.get_list_of_seeder("list_of_seeders/seeder_info.txt", info_hash)
             if response:
                 self.send_response(200)
                 self.send_header('Content-type', 'text/html')
                 self.end_headers()
                 self.wfile.write(response.encode())  # Gửi nội dung dòng đã tìm thấy
             else:
-                # Trả về mã trạng thái 404 nếu không tìm thấy dòng
+                # Không tìm thấy
                 self.send_response(404)
                 self.send_header('Content-type', 'text/html')
                 self.end_headers()
                 self.wfile.write(b"Not Found")
+        elif path.startswith("/p2p/disconnect"):
+            parsed_url = urlparse(self.path)
+            query_params = parse_qs(parsed_url.query)
+            info_hash = query_params.get('info_hash', [None])[0]
+            ip = query_params.get('ip', [None])[0]
+            INFO_PATH = os.path.join("list_of_seeders","seeder_info.txt")
+            status_code = self._disconnect_seeder(query_params.get('port', [None])[0], info_hash, ip)
+            self.send_response(status_code)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            return
         else:
-            # Nếu đường dẫn không hợp lệ, trả về mã trạng thái 404
+            # Đường dẫn không hợp lệ
             self.send_response(404)
             self.send_header('Content-type', 'text/html')
             self.end_headers()
@@ -67,80 +70,119 @@ class TrackerRequestHandler(BaseHTTPRequestHandler):
     def _update_seeder(self, port, info_hash, ip):
         try:
             seeder_info = f"{ip}:{port}"
-            file_dir = "tracker_directory"
+            file_dir = "list_of_seeders"
             file_name = "seeder_info.txt"
             file_path = os.path.join(file_dir, file_name)
             os.makedirs(file_dir, exist_ok=True)  # Tạo thư mục nếu chưa tồn tại
             seeder_line = f"{info_hash}: {seeder_info}\n"
 
-            # Đọc nội dung hiện tại của file
-            if os.path.isfile(file_path):  # Kiểm tra xem file đã tồn tại hay chưa
-                with open(file_path, 'r') as file:
+            if os.path.isfile(file_path):
+                with open(file_path, 'r', encoding='utf-8') as file:
                     lines = file.readlines()
             else:
                 lines = []
 
-            # Kiểm tra xem seeder đã tồn tại trong file hay chưa
             seeder_exists = False
             for i, line in enumerate(lines):
                 if info_hash in line:
-                    # Seeder đã tồn tại, kiểm tra xem port đã tồn tại trong hàng hay chưa
                     seeder_ports = line.split(':')[1].strip().split(',')
-                    if port in seeder_ports:
-                        # Port đã tồn tại, không cần cập nhật
+                    print(f'Seeder port {seeder_ports}')
+                    if ip in seeder_ports:
                         print(f"Port {port} already exists for {info_hash}. Skipping update.")
-                        return
+                        return 201
                     else:
-                        # Port chưa tồn tại, cập nhật thông tin
                         seeder_exists = True
                         if line[-1] != '\n':
-                            line += '\n'  # Đảm bảo dòng cuối cùng có ký tự xuống dòng
-                        lines[i] = line.rstrip() + f", {seeder_info}\n"  # Thêm thông tin mới vào dòng hiện tại
+                            line += '\n'
+                        lines[i] = line.rstrip() + f", {seeder_info}\n"
                         break
 
-            # Nếu seeder chưa tồn tại, thêm một dòng mới
             if not seeder_exists:
                 lines.append(seeder_line)
 
-            # Ghi lại toàn bộ nội dung vào file
-            with open(file_path, 'w') as file:
+            with open(file_path, 'w', encoding='utf-8') as file:
                 file.writelines(lines)
 
             print(f"Seeder information updated for {file_name}.")
+            return 200
         except Exception as e:
             print(f"Error updating seeder information: {e}")
-    
-    def find_and_print_line(self, file_path, target_string):
-        with open(file_path, 'r') as file:
+
+    def _disconnect_seeder(self, port, info_hash, ip):
+        try:
+            file_dir = "list_of_seeders"
+            file_name = "seeder_info.txt"
+            file_path = os.path.join(file_dir, file_name)
+
+            if os.path.isfile(file_path):
+                with open(file_path, 'r', encoding='utf-8') as file:
+                    lines = file.readlines()
+            else:
+                lines = []
+                return 201
+
+            updated_lines = []
+            target = f"{ip}:{port}"
+            if lines == []: return 201
+
+            for line in lines:
+                if line.startswith(info_hash + ":"):
+                    parts = line.strip().split(": ", 1)
+                    if len(parts) == 2:
+                        peers = parts[1].split(", ")
+                        num_peers = len(peers)
+                        peers = [peer for peer in peers if peer != target]
+                        if peers:
+                            updated_lines.append(f"{info_hash}: {', '.join(peers)}\n")
+                            if (num_peers == len(peers)):
+                                return 201
+                        if(num_peers == 0):
+                            return 201
+                else:
+                    updated_lines.append(line)
+                    return 201
+
+            with open(file_path, "w", encoding='utf-8') as file:
+                file.writelines(updated_lines)
+
+            print(f"Seeder information updated for client {ip}:{port}.")
+            return 200
+        except Exception as e:
+            print(f"Error updating seeder information: {e}")
+
+    def get_list_of_seeder(self, file_path, target_string):
+        if not os.path.isfile(file_path):
+            return None
+        with open(file_path, 'r', encoding='utf-8') as file:
             for line in file:
                 if target_string + ": " in line:
-                    return line.split(": ", 1)[1]  # In ra phần sau của dòng chứa chuỗi
-                    break
-        return NULL
-
-def get_local_ip(interface='wlo1'):
-    # Chạy lệnh ifconfig và lấy kết quả
-    result = subprocess.run(['ifconfig', interface], capture_output=True, text=True)
-
-    # Phân tích kết quả để tìm địa chỉ IP
-    ip_pattern = r'inet (\d+\.\d+\.\d+\.\d+)'
-    match = re.search(ip_pattern, result.stdout)
-
-    # Trả về địa chỉ IP nếu tìm thấy, nếu không trả về None
-    if match:
-        return match.group(1)
-    else:
+                    return line.split(": ", 1)[1]
         return None
 
+def get_local_ip():
+    hostname = socket.gethostname()
+    local_ip = socket.gethostbyname(hostname)
+    return local_ip
+
+def read_seeder_info(file_path):
+    ip_port_list = []
+    with open(file_path, 'r', encoding='utf-8') as file:
+        for line in file:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                _, ip_port = line.split(": ", 1)
+                ip, port = ip_port.split(":")
+                ip_port_list.append({"ip": ip, "port": int(port)})
+            except ValueError:
+                print(f"Invalid line format: {line}")
+    return ip_port_list
+
 def start_tracker(port=6880):
-    # Khởi tạo một máy chủ HTTP với cổng được chỉ định
     server_address = (get_local_ip(), port)
     httpd = HTTPServer(server_address, TrackerRequestHandler)
     print(f"Tracker server is running on {get_local_ip()}:{port}")
-
-    # Bắt đầu lắng nghe yêu cầu
     httpd.serve_forever()
 
-# Khởi động máy chủ tracker
 start_tracker()
-

@@ -38,7 +38,9 @@ deactivate () {
 # unset irrelevant variables
 deactivate nondestructive
 
-VIRTUAL_ENV="/home/linh/Documents/codecrafters-bittorrent-python/app/myenv"
+# VIRTUAL_ENV="/home/linh/Documents/codecrafters-bittorrent-python/app/myenv"
+VIRTUAL_ENV = "C:/Users/Admin/Downloads/MẠNG MÁY TÍNH/MẠNG MÁY TÍNH/ASSIGNMENT/Computer_Network_Assignment_1/myenv"
+
 export VIRTUAL_ENV
 
 _OLD_VIRTUAL_PATH="$PATH"
